@@ -79,6 +79,8 @@ public class CacheRefresher {
 
     private void execute(CacheInvocation cacheInvocation) {
         try {
+            // 先删除缓存，后续反射调用方法才能请求到真实数据
+            redisTemplate.delete(cacheInvocation.getKey());
             Class<?> targetClass = Class.forName(cacheInvocation.getTargetName());
             Object target = SpringContextUtil.getBean(targetClass);
             Method method = targetClass.getMethod(cacheInvocation.getMethodName(), cacheInvocation.getArgTypes());
