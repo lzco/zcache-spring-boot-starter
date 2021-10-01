@@ -40,12 +40,9 @@ public @interface TtlCacheable {
     @AliasFor("value")
     String[] cacheNames() default {};
 
-    /**
-     * key值，默认方法名（加参数值）
-     */
-    String key() default "method.name + (args.length==0?'':('-'+ args))";
+    String key() default "";
 
-    String keyGenerator() default "";
+    String keyGenerator() default "ttlCacheKeyGenerator";
 
     String cacheManager() default "";
 

@@ -16,6 +16,10 @@
 package com.github.lzco.cache.task;
 
 import com.github.lzco.cache.constant.CacheConstant;
+import com.github.lzco.cache.prop.ProjectProperties;
+import com.github.lzco.cache.prop.TaskProperties;
+import com.github.lzco.cache.util.SpringContextUtil;
+import com.github.lzco.cache.util.ThreadLocalUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -30,7 +34,6 @@ import java.util.concurrent.TimeUnit;
  * 缓存刷新器
  * @author lzc
  * @date 2021/03/11 16:00
- * See More: https://github.com/lzco, https://gitee.com/lzco
  */
 public class CacheRefresher {
 
@@ -40,26 +43,41 @@ public class CacheRefresher {
     @Resource
     private ThreadPoolExecutor cacheThreadPoolExecutor;
 
+    @Resource
+    private ProjectProperties projectProperties;
+
+    @Resource
+    private CacheAccessRegistrar cacheAccessRegistrar;
+
+    @Resource
+    private TaskProperties taskProperties;
+
     private final Logger logger = LoggerFactory.getLogger(CacheRefresher.class);
 
     /**
      * 添加需要自动刷新的缓存
+     *
      * @param cacheInvocation 缓存调用对象
      * @author lzc
      * @date 2021/03/10 16:21
      */
     public void addCache(CacheInvocation cacheInvocation) {
-        Object cache = redisTemplate.opsForHash().get(CacheConstant.REFRESH_KEY, cacheInvocation.getKey());
+        // 外部请求，非自动刷新时的反射调用
+        if (ThreadLocalUtil.get(CacheConstant.REFRESH_KEY) == null) {
+            // 记录访问缓存的时间
+            cacheAccessRegistrar.register(cacheInvocation.getKey());
+        }
+        Object cache = redisTemplate.opsForHash().get(this.refreshKey(), cacheInvocation.getKey());
         CacheInvocation oldInvocation = (CacheInvocation) cache;
         if (oldInvocation != null && oldInvocation.getTtl() == cacheInvocation.getTtl()) {
             // 以key为准，如果过期时间一样，则视为完全一样，避免每次获取方法缓存都设置一次刷新参数的缓存
             return;
         }
-        redisTemplate.opsForHash().put(CacheConstant.REFRESH_KEY, cacheInvocation.getKey(), cacheInvocation);
+        redisTemplate.opsForHash().put(this.refreshKey(), cacheInvocation.getKey(), cacheInvocation);
     }
 
     public void refresh() {
-        Map<Object, Object> caches = redisTemplate.opsForHash().entries(CacheConstant.REFRESH_KEY);
+        Map<Object, Object> caches = redisTemplate.opsForHash().entries(this.refreshKey());
         if (caches.size() == 0) {
             return;
         }
@@ -67,19 +85,20 @@ public class CacheRefresher {
             try {
                 final CacheInvocation cacheInvocation = (CacheInvocation) entry.getValue();
                 if (cacheInvocation == null) {
-                    redisTemplate.opsForHash().delete(CacheConstant.REFRESH_KEY, entry.getKey());
+                    redisTemplate.opsForHash().delete(this.refreshKey(), entry.getKey());
                     continue;
                 }
                 cacheThreadPoolExecutor.execute(() -> this.execute(cacheInvocation));
             } catch (ClassCastException e) {
-                redisTemplate.opsForHash().delete(CacheConstant.REFRESH_KEY, entry.getKey());
+                redisTemplate.opsForHash().delete(this.refreshKey(), entry.getKey());
             }
         }
     }
 
     private void execute(CacheInvocation cacheInvocation) {
         try {
-            // 先删除缓存，后续反射调用方法才能请求到真实数据
+            ThreadLocalUtil.put(CacheConstant.REFRESH_KEY, Boolean.TRUE);
+            // 删除缓存，不然缓存未过期的情况，反射请求方法得到的结果是缓存
             redisTemplate.delete(cacheInvocation.getKey());
             Class<?> targetClass = Class.forName(cacheInvocation.getTargetName());
             Object target = SpringContextUtil.getBean(targetClass);
@@ -92,6 +111,53 @@ public class CacheRefresher {
             }
         } catch (Exception e) {
             logger.error("CacheInvocation reflect fail", e);
+            // 删除无法反射的自刷缓存
+            redisTemplate.opsForHash().delete(this.refreshKey(), cacheInvocation.getKey());
+        } finally {
+            ThreadLocalUtil.remove(CacheConstant.REFRESH_KEY);
+        }
+    }
+
+    private String refreshKey() {
+        return CacheConstant.REFRESH_KEY + projectProperties.getName();
+    }
+
+    /**
+     * 超期未访问接口缓存，删掉对应自刷缓存和访问时间缓存
+     *
+     * @author lzc
+     * @date 2021/09/16 16:45
+     */
+    public void cleanRefreshValue() {
+        long overAccessTime = taskProperties.getCleanOverAccessTime();
+        com.github.lzco.cache.constant.TimeUnit overAccessTimeUnit = taskProperties.getCleanOverAccessTimeUnit();
+        if (overAccessTime <= 0 || overAccessTimeUnit == null) {
+            return;
+        }
+
+        Map<Object, Object> caches = cacheAccessRegistrar.getAllCaches();
+        if (caches.size() == 0) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        for (Map.Entry<Object, Object> entry : caches.entrySet()) {
+            try {
+                final Long accessMillisTime = (Long) entry.getValue();
+                if (accessMillisTime == null) {
+                    redisTemplate.opsForHash().delete(this.refreshKey(), entry.getKey());
+                    cacheAccessRegistrar.delete(entry.getKey());
+                    continue;
+                }
+                // 超期未访问接口缓存，删掉对应自刷缓存和访问时间缓存
+                long overTime = overAccessTimeUnit.toMillis(overAccessTime);
+                if (now - accessMillisTime > overTime) {
+                    redisTemplate.opsForHash().delete(this.refreshKey(), entry.getKey());
+                    cacheAccessRegistrar.delete(entry.getKey());
+                }
+            } catch (ClassCastException e) {
+                redisTemplate.opsForHash().delete(this.refreshKey(), entry.getKey());
+                cacheAccessRegistrar.delete(entry.getKey());
+            }
         }
     }
 }

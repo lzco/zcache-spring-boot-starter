@@ -17,6 +17,8 @@ package com.github.lzco.cache.core;
 
 import com.github.lzco.cache.annotation.TtlCacheable;
 import com.github.lzco.cache.clone.CacheExpressionRootObject;
+import com.github.lzco.cache.constant.CacheConstant;
+import com.github.lzco.cache.prop.ProjectProperties;
 import com.github.lzco.cache.task.CacheInvocation;
 import com.github.lzco.cache.task.CacheRefresher;
 import org.slf4j.Logger;
@@ -38,10 +40,7 @@ import org.springframework.util.StringUtils;
 import javax.annotation.Resource;
 import java.lang.reflect.Method;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -50,7 +49,6 @@ import java.util.concurrent.ConcurrentMap;
  *
  * @author lzc
  * @date 2021/03/08 16:42
- * See More: https://github.com/lzco, https://gitee.com/lzco
  */
 public class TtlRedisCacheResolver extends SimpleCacheResolver {
 
@@ -74,8 +72,14 @@ public class TtlRedisCacheResolver extends SimpleCacheResolver {
     @Resource(name = "ttlRedisCacheConfiguration")
     private RedisCacheConfiguration redisCacheConfiguration;
 
+    @Resource(name = "ttlCacheKeyGenerator")
+    private TtlCacheKeyGenerator ttlCacheKeyGenerator;
+
     @Resource
     private CacheRefresher cacheRefresher;
+
+    @Resource
+    private ProjectProperties projectProperties;
 
     public TtlRedisCacheResolver(CacheManager cacheManager) {
         super(cacheManager);
@@ -95,8 +99,10 @@ public class TtlRedisCacheResolver extends SimpleCacheResolver {
             return Collections.emptyList();
         } else {
             Collection<Cache> result = new ArrayList<>(cacheNames.size());
+            String prefix = this.buildKeyPrefix();
             for (String cacheName : cacheNames) {
                 // ttl > 0，有过期时间
+                cacheName = prefix + cacheName;
                 Cache cache = this.getCache(context, cacheName);
                 if (cache == null) {
                     // ttl == 0，无过期时间
@@ -193,7 +199,7 @@ public class TtlRedisCacheResolver extends SimpleCacheResolver {
         if (conditional != null && !conditional) {
             return;
         }
-        String key = this.parseCacheSpEL(caches, ttlCacheable.key(), context.getTarget(), method, context.getArgs(), String.class);
+        String key = this.parseCacheKey(caches, ttlCacheable, context.getTarget(), method, context.getArgs());
         String redisKey = this.getRedisKey(cacheName, key);
         CacheInvocation cacheInvocation = new CacheInvocation(context.getTarget().getClass().getName(), method.getName(),
                 method.getParameterTypes(), context.getArgs(), redisKey, ttlCacheable.ttl());
@@ -230,16 +236,35 @@ public class TtlRedisCacheResolver extends SimpleCacheResolver {
         return EXPRESSION_PARSER.parseExpression(expression).getValue(evaluationContext, resultType);
     }
 
+    private String parseCacheKey(Collection<Cache> caches, TtlCacheable ttlCacheable, Object target, Method method, Object[] args) {
+        if (StringUtils.isEmpty(ttlCacheable.keyGenerator()) || !Objects.equals("ttlCacheKeyGenerator", ttlCacheable.keyGenerator())) {
+            return this.parseCacheSpEL(caches, ttlCacheable.key(), target, method, args, String.class);
+        }
+        return ttlCacheKeyGenerator.generate(target, method, args).toString();
+    }
+
     /**
      * 获取redis缓存中的key
+     *
      * @param cacheName 缓存名称（注解中的名称）
-     * @param cacheKey 缓存key（注解中的key）
+     * @param cacheKey  缓存key（注解中的key）
      * @return java.lang.String
      * @author lzc
      * @date 2021/03/10 15:39
      */
     private String getRedisKey(String cacheName, String cacheKey) {
         return redisCacheConfiguration.getKeyPrefixFor(cacheName).concat(cacheKey);
+    }
+
+    /**
+     * 构建数据缓存的key前缀
+     *
+     * @return java.lang.String
+     * @author lzc
+     * @date 2021/10/1 16:48
+     */
+    private String buildKeyPrefix() {
+        return CacheConstant.DATA_PREFIX_KEY + projectProperties.getName() + "::";
     }
 
 }

@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.github.lzco.cache.task;
+package com.github.lzco.cache.util;
 
 import org.springframework.beans.BeansException;
 import org.springframework.context.ApplicationContext;

@@ -15,6 +15,7 @@
  */
 package com.github.lzco.cache.task;
 
+import com.github.lzco.cache.prop.TaskProperties;
 import org.springframework.scheduling.annotation.SchedulingConfigurer;
 import org.springframework.scheduling.config.ScheduledTaskRegistrar;
 
@@ -38,8 +39,14 @@ public class CacheTask implements SchedulingConfigurer {
     @Override
     public void configureTasks(ScheduledTaskRegistrar registrar) {
         if (taskProperties.getCron() != null && taskProperties.getCron().trim().length() > 0) {
-            registrar.addCronTask(() -> cacheRefresher.refresh(), taskProperties.getCron());
+            registrar.addCronTask(this::execute, taskProperties.getCron());
         }
+    }
+
+    private void execute() {
+        // 先清理超期未访问缓存的对应自刷缓存，再进行自刷
+        cacheRefresher.cleanRefreshValue();
+        cacheRefresher.refresh();
     }
 
 }

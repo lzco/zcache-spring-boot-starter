@@ -16,12 +16,16 @@
 package com.github.lzco.cache.configuration;
 
 import com.github.lzco.cache.constant.CacheConstant;
+import com.github.lzco.cache.core.TtlCacheKeyGenerator;
 import com.github.lzco.cache.core.TtlRedisCacheManager;
 import com.github.lzco.cache.core.TtlRedisCacheResolver;
+import com.github.lzco.cache.prop.ProjectProperties;
+import com.github.lzco.cache.prop.SerialProperties;
+import com.github.lzco.cache.prop.TaskProperties;
+import com.github.lzco.cache.task.CacheAccessRegistrar;
 import com.github.lzco.cache.task.CacheRefresher;
 import com.github.lzco.cache.task.CacheTask;
-import com.github.lzco.cache.task.SpringContextUtil;
-import com.github.lzco.cache.task.TaskProperties;
+import com.github.lzco.cache.util.SpringContextUtil;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -33,6 +37,7 @@ import org.springframework.data.redis.cache.RedisCacheConfiguration;
 import org.springframework.data.redis.cache.RedisCacheWriter;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.CustomizableThreadFactory;
@@ -49,18 +54,19 @@ import java.util.concurrent.TimeUnit;
  *
  * @author lzc
  * @date 2021/03/08 9:42
- * See More: https://github.com/lzco, https://gitee.com/lzco
  */
 @Configuration
 @EnableCaching
 @EnableScheduling
-@EnableConfigurationProperties(TaskProperties.class)
+@EnableConfigurationProperties({TaskProperties.class, SerialProperties.class, ProjectProperties.class})
 public class CacheAutoConfiguration {
 
     @Resource
     RedisConnectionFactory redisConnectionFactory;
     @Resource
     private TaskProperties taskProperties;
+    @Resource
+    private SerialProperties serialProperties;
 
     @Bean
     @ConditionalOnMissingBean(name = "ttlRedisCacheWriter")
@@ -71,7 +77,8 @@ public class CacheAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(name = "ttlRedisCacheConfiguration")
     public RedisCacheConfiguration ttlRedisCacheConfiguration() {
-        return RedisCacheConfiguration.defaultCacheConfig();
+        return RedisCacheConfiguration.defaultCacheConfig()
+                .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(this.ttlSerializer()));
     }
 
     @Bean
@@ -93,10 +100,21 @@ public class CacheAutoConfiguration {
         RedisTemplate<String, Object> redisTemplate = new RedisTemplate<>();
         redisTemplate.setConnectionFactory(redisConnectionFactory);
         redisTemplate.setKeySerializer(RedisSerializer.string());
-        redisTemplate.setValueSerializer(RedisSerializer.java());
+        redisTemplate.setValueSerializer(this.ttlSerializer());
         redisTemplate.setHashKeySerializer(RedisSerializer.string());
         redisTemplate.setHashValueSerializer(RedisSerializer.java());
         return redisTemplate;
+    }
+
+    private RedisSerializer<?> ttlSerializer() {
+        switch (serialProperties.getType()) {
+            case json:
+                return RedisSerializer.json();
+            case string:
+                return RedisSerializer.string();
+            default:
+                return RedisSerializer.java();
+        }
     }
 
     @Bean
@@ -139,4 +157,14 @@ public class CacheAutoConfiguration {
         return new SpringContextUtil();
     }
 
+    @Bean
+    @ConditionalOnMissingBean(name = "ttlCacheKeyGenerator")
+    public TtlCacheKeyGenerator ttlCacheKeyGenerator() {
+        return new TtlCacheKeyGenerator();
+    }
+
+    @Bean("cacheAccessRegistrar")
+    public CacheAccessRegistrar cacheAccessRegistrar() {
+        return new CacheAccessRegistrar();
+    }
 }
